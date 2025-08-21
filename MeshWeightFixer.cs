@@ -1,14 +1,14 @@
 using UnityEngine;
 using UnityEditor;
 using System.Collections.Generic;
-using System.Linq;
+using System.IO; 
 
 public class OrphanedBoneWeightCleaner
 {
     [MenuItem("Tools/WhyKnot/Clean Mesh By Orphaned Bone Weights")]
     private static void CleanMesh()
     {
-        // Get the currently selected GameObject in the editor.
+        
         GameObject selectedObject = Selection.activeGameObject;
 
         if (selectedObject == null)
@@ -31,29 +31,33 @@ public class OrphanedBoneWeightCleaner
             return;
         }
 
-        // Get all data from the original mesh and renderer.
         Vector3[] originalVertices = originalMesh.vertices;
         BoneWeight[] originalBoneWeights = originalMesh.boneWeights;
         int[] originalTriangles = originalMesh.triangles;
-        Vector3[] originalNormals = originalMesh.normals;
-        Vector2[] originalUVs = originalMesh.uv;
         Transform[] bones = skinnedMeshRenderer.bones;
         int boneCount = bones.Length;
+        
+        bool hasNormals = originalMesh.normals.Length > 0;
+        bool hasTangents = originalMesh.tangents.Length > 0;
+        bool hasUVs = originalMesh.uv.Length > 0;
+        bool hasColors = originalMesh.colors.Length > 0;
+        
+        Vector3[] originalNormals = hasNormals ? originalMesh.normals : null;
+        Vector4[] originalTangents = hasTangents ? originalMesh.tangents : null;
+        Vector2[] originalUVs = hasUVs ? originalMesh.uv : null;
+        Color[] originalColors = hasColors ? originalMesh.colors : null;
 
-        // A list to store the indices of the vertices we want to keep.
         List<int> verticesToKeep = new List<int>();
         for (int i = 0; i < originalBoneWeights.Length; i++)
         {
             BoneWeight bw = originalBoneWeights[i];
             bool hasInvalidBone = false;
 
-            // Check if any bone index is out of bounds OR if the bone at that index is null.
             if (bw.weight0 > 0 && (bw.boneIndex0 >= boneCount || bones[bw.boneIndex0] == null)) hasInvalidBone = true;
             if (bw.weight1 > 0 && (bw.boneIndex1 >= boneCount || bones[bw.boneIndex1] == null)) hasInvalidBone = true;
             if (bw.weight2 > 0 && (bw.boneIndex2 >= boneCount || bones[bw.boneIndex2] == null)) hasInvalidBone = true;
             if (bw.weight3 > 0 && (bw.boneIndex3 >= boneCount || bones[bw.boneIndex3] == null)) hasInvalidBone = true;
             
-            // Keep the vertex only if all its weights point to valid, non-null bones.
             if (!hasInvalidBone)
             {
                 verticesToKeep.Add(i);
@@ -72,37 +76,41 @@ public class OrphanedBoneWeightCleaner
             return;
         }
 
-        // Create a map from the old vertex index to the new vertex index.
+        
         int[] oldToNewVertexIndexMap = new int[originalVertices.Length];
         for (int i = 0; i < verticesToKeep.Count; i++)
         {
             oldToNewVertexIndexMap[verticesToKeep[i]] = i;
         }
-
-        // Create new data arrays for the cleaned mesh.
+        
         List<Vector3> newVertices = new List<Vector3>();
         List<BoneWeight> newBoneWeights = new List<BoneWeight>();
         List<Vector3> newNormals = new List<Vector3>();
+        List<Vector4> newTangents = new List<Vector4>();
         List<Vector2> newUVs = new List<Vector2>();
+        List<Color> newColors = new List<Color>();
 
         foreach (int oldIndex in verticesToKeep)
         {
             newVertices.Add(originalVertices[oldIndex]);
             newBoneWeights.Add(originalBoneWeights[oldIndex]);
-            if(originalNormals.Length > 0) newNormals.Add(originalNormals[oldIndex]);
-            if(originalUVs.Length > 0) newUVs.Add(originalUVs[oldIndex]);
+            if (hasNormals) newNormals.Add(originalNormals[oldIndex]);
+            if (hasTangents) newTangents.Add(originalTangents[oldIndex]);
+            if (hasUVs) newUVs.Add(originalUVs[oldIndex]);
+            if (hasColors) newColors.Add(originalColors[oldIndex]);
         }
 
-        // Rebuild the triangles array.
         List<int> newTriangles = new List<int>();
+        
+        HashSet<int> verticesToKeepSet = new HashSet<int>(verticesToKeep);
+
         for (int i = 0; i < originalTriangles.Length; i += 3)
         {
             int oldV1 = originalTriangles[i];
             int oldV2 = originalTriangles[i + 1];
             int oldV3 = originalTriangles[i + 2];
 
-            // If all three vertices of a triangle are being kept, add it to the new mesh.
-            if (verticesToKeep.Contains(oldV1) && verticesToKeep.Contains(oldV2) && verticesToKeep.Contains(oldV3))
+            if (verticesToKeepSet.Contains(oldV1) && verticesToKeepSet.Contains(oldV2) && verticesToKeepSet.Contains(oldV3))
             {
                 newTriangles.Add(oldToNewVertexIndexMap[oldV1]);
                 newTriangles.Add(oldToNewVertexIndexMap[oldV2]);
@@ -110,22 +118,40 @@ public class OrphanedBoneWeightCleaner
             }
         }
 
-        // Create and assign the new mesh.
         Mesh newMesh = new Mesh();
         newMesh.name = originalMesh.name + "_cleaned";
         newMesh.vertices = newVertices.ToArray();
         newMesh.triangles = newTriangles.ToArray();
         newMesh.boneWeights = newBoneWeights.ToArray();
-        if(newNormals.Count > 0) newMesh.normals = newNormals.ToArray();
-        if(newUVs.Count > 0) newMesh.uv = newUVs.ToArray();
+        
+        if (hasNormals) newMesh.normals = newNormals.ToArray();
+        if (hasTangents) newMesh.tangents = newTangents.ToArray();
+        if (hasUVs) newMesh.uv = newUVs.ToArray();
+        if (hasColors) newMesh.colors = newColors.ToArray();
+        
         newMesh.bindposes = originalMesh.bindposes;
-
         newMesh.RecalculateBounds();
         
+        string path = AssetDatabase.GetAssetPath(originalMesh);
+        if (string.IsNullOrEmpty(path))
+        {
+            path = "Assets/" + originalMesh.name + "_cleaned.asset";
+        }
+        else
+        {
+            string directory = Path.GetDirectoryName(path);
+            string filename = Path.GetFileNameWithoutExtension(originalMesh.name);
+            path = directory + "/" + filename + "_cleaned.asset";
+        }
+
+        AssetDatabase.CreateAsset(newMesh, AssetDatabase.GenerateUniqueAssetPath(path));
+        AssetDatabase.SaveAssets();
+
         skinnedMeshRenderer.sharedMesh = newMesh;
 
         int removedCount = originalVertices.Length - newVertices.Count;
-        Debug.Log($"Successfully cleaned mesh. Removed {removedCount} vertices with orphaned bone weights.");
-        EditorUtility.DisplayDialog("Mesh Cleaned", $"Successfully removed {removedCount} vertices with orphaned bone weights.", "OK");
+        string logMessage = $"Successfully removed {removedCount} vertices. New mesh asset created at: {path}";
+        Debug.Log(logMessage, selectedObject);
+        EditorUtility.DisplayDialog("Mesh Cleaned", logMessage, "OK");
     }
 }
